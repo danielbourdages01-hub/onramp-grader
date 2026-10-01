@@ -10,7 +10,7 @@ st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar
 
 st.title("📱 Onramp Auto-Scan Camera Grader")
 
-# --- 1. CREATE CUSTOM CAMERA COMPONENT WITH MOBILE COMPATIBILITY ---
+# --- 1. CREATE COMPACT, ACCURATE AUTO-CAMERA COMPONENT ---
 COMPONENT_DIR = "auto_camera_component"
 if not os.path.exists(COMPONENT_DIR):
     os.makedirs(COMPONENT_DIR)
@@ -22,28 +22,84 @@ INDEX_HTML = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body { margin: 0; padding: 0; background: #111; font-family: system-ui, -apple-system, sans-serif; color: white; }
-        .viewfinder { position: relative; width: 100%; max-width: 500px; margin: 0 auto; overflow: hidden; border-radius: 12px; background: #000; min-height: 380px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-        video { width: 100%; height: auto; display: none; object-fit: cover; background: #000; }
         
-        /* Start Button overlay for Mobile Permission requirements */
-        #startBtn { padding: 14px 28px; font-size: 16px; font-weight: bold; background: #0066CC; color: white; border: none; border-radius: 25px; cursor: pointer; z-index: 30; box-shadow: 0 4px 12px rgba(0,102,204,0.4); }
+        /* Compact mobile frame sizing */
+        .viewfinder { 
+            position: relative; 
+            width: 100%; 
+            max-width: 380px; 
+            height: 320px; 
+            margin: 0 auto; 
+            overflow: hidden; 
+            border-radius: 14px; 
+            background: #000; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+        }
+        
+        video { width: 100%; height: 100%; object-fit: cover; display: none; background: #000; }
+        
+        #startBtn { 
+            padding: 12px 24px; 
+            font-size: 15px; 
+            font-weight: 700; 
+            background: #0066CC; 
+            color: white; 
+            border: none; 
+            border-radius: 20px; 
+            cursor: pointer; 
+            z-index: 30; 
+            box-shadow: 0 4px 12px rgba(0,102,204,0.4); 
+        }
         #startBtn:active { transform: scale(0.96); }
 
-        /* 4 Corner Target Overlay Boxes */
-        .target { position: absolute; width: 44px; height: 44px; border: 3px dashed #FFD700; border-radius: 6px; box-sizing: border-box; transition: all 0.2s ease; z-index: 10; display: none; }
-        .target.detected { border: 4px solid #00FF66; background-color: rgba(0, 255, 102, 0.25); box-shadow: 0 0 12px #00FF66; }
+        /* Corner Target Overlay Boxes with enlarged touch-friendly capture zones */
+        .target { 
+            position: absolute; 
+            width: 52px; 
+            height: 52px; 
+            border: 3px dashed #FFD700; 
+            border-radius: 8px; 
+            box-sizing: border-box; 
+            transition: all 0.15s ease; 
+            z-index: 10; 
+            display: none; 
+        }
+        .target.detected { 
+            border: 4px solid #00FF66; 
+            background-color: rgba(0, 255, 102, 0.3); 
+            box-shadow: 0 0 14px #00FF66; 
+        }
         
-        #tl { top: 20px; left: 20px; }
-        #tr { top: 20px; right: 20px; }
-        #bl { bottom: 75px; left: 20px; }
-        #br { bottom: 75px; right: 20px; }
+        #tl { top: 12px; left: 12px; }
+        #tr { top: 12px; right: 12px; }
+        #bl { bottom: 55px; left: 12px; }
+        #br { bottom: 55px; right: 12px; }
 
-        .status-bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); width: 88%; padding: 10px; background: rgba(0,0,0,0.85); color: #FFF; text-align: center; border-radius: 16px; font-size: 13px; font-weight: 600; z-index: 20; border: 1px solid rgba(255,255,255,0.2); word-wrap: break-word; display: none; }
+        .status-bar { 
+            position: absolute; 
+            bottom: 8px; 
+            left: 50%; 
+            transform: translateX(-50%); 
+            width: 90%; 
+            padding: 8px 12px; 
+            background: rgba(0,0,0,0.85); 
+            color: #FFF; 
+            text-align: center; 
+            border-radius: 12px; 
+            font-size: 12px; 
+            font-weight: 600; 
+            z-index: 20; 
+            border: 1px solid rgba(255,255,255,0.2); 
+            display: none; 
+        }
         .status-bar.aligned { background: rgba(0, 200, 83, 0.95); color: #FFF; border-color: #00FF66; }
     </style>
 </head>
 <body>
-    <div class="viewfinder">
+    <div class="viewfinder" id="viewfinder">
         <button id="startBtn" onclick="startCamera()">📷 Tap to Start Rear Camera</button>
         <video id="webcam" autoplay playsinline muted></video>
         
@@ -63,12 +119,14 @@ INDEX_HTML = """<!DOCTYPE html>
         }
         
         sendToStreamlit("streamlit:componentReady", { apiVersion: 1 });
-        sendToStreamlit("streamlit:setFrameHeight", { height: 420 });
+        sendToStreamlit("streamlit:setFrameHeight", { height: 340 });
 
         const video = document.getElementById('webcam');
         const canvas = document.getElementById('procCanvas');
         const statusEl = document.getElementById('status');
         const startBtn = document.getElementById('startBtn');
+        const vfEl = document.getElementById('viewfinder');
+        
         const targets = {
             tl: document.getElementById('tl'),
             tr: document.getElementById('tr'),
@@ -78,7 +136,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
         let isCaptured = false;
         let alignmentFrames = 0;
-        const REQUIRED_STEADY_FRAMES = 10;
+        const REQUIRED_STEADY_FRAMES = 5; // Responsive capture (~0.15s hold)
 
         async function startCamera() {
             startBtn.style.display = "none";
@@ -86,7 +144,6 @@ INDEX_HTML = """<!DOCTYPE html>
             statusEl.style.display = "block";
             for (let k in targets) targets[k].style.display = "block";
 
-            // Mobile-compatible WebRTC constraints for Rear Camera
             const constraintsOptions = [
                 { video: { facingMode: { exact: "environment" } }, audio: false },
                 { video: { facingMode: "environment" }, audio: false },
@@ -98,14 +155,11 @@ INDEX_HTML = """<!DOCTYPE html>
                 try {
                     stream = await navigator.mediaDevices.getUserMedia(config);
                     if (stream) break;
-                } catch (e) {
-                    console.warn("Camera config attempt failed:", e);
-                }
+                } catch (e) {}
             }
 
             if (!stream) {
-                statusEl.style.display = "block";
-                statusEl.innerText = "❌ Camera Access Denied. Ensure page is loaded via HTTPS.";
+                statusEl.innerText = "❌ Camera Access Denied";
                 statusEl.style.background = "#B71C1C";
                 return;
             }
@@ -117,7 +171,6 @@ INDEX_HTML = """<!DOCTYPE html>
             };
         }
 
-        // Real-time Frame Analysis for 4-Corner Square Detection
         function scanLoop() {
             if (isCaptured) return;
 
@@ -127,34 +180,37 @@ INDEX_HTML = """<!DOCTYPE html>
                 const ctx = canvas.getContext('2d', { willReadFrequently: true });
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                const vw = canvas.width;
-                const vh = canvas.height;
-
-                const zones = {
-                    tl: { x: vw * 0.05, y: vh * 0.05, w: vw * 0.15, h: vh * 0.15 },
-                    tr: { x: vw * 0.80, y: vh * 0.05, w: vw * 0.15, h: vh * 0.15 },
-                    bl: { x: vw * 0.05, y: vh * 0.80, w: vw * 0.15, h: vh * 0.15 },
-                    br: { x: vw * 0.80, y: vh * 0.80, w: vw * 0.15, h: vh * 0.15 }
-                };
+                // Map screen box coordinates directly to canvas pixel space
+                const videoRect = video.getBoundingClientRect();
+                const scaleX = canvas.width / videoRect.width;
+                const scaleY = canvas.height / videoRect.height;
 
                 let alignedCount = 0;
 
-                for (let key in zones) {
-                    const z = zones[key];
+                for (let key in targets) {
+                    const tEl = targets[key];
+                    const tRect = tEl.getBoundingClientRect();
+
+                    // Convert visual target box rectangle into pixel space on canvas
+                    const roiX = Math.max(0, (tRect.left - videoRect.left) * scaleX);
+                    const roiY = Math.max(0, (tRect.top - videoRect.top) * scaleY);
+                    const roiW = Math.min(canvas.width - roiX, tRect.width * scaleX);
+                    const roiH = Math.min(canvas.height - roiY, tRect.height * scaleY);
+
                     try {
-                        const imgData = ctx.getImageData(z.x, z.y, z.w, z.h);
+                        const imgData = ctx.getImageData(roiX, roiY, roiW, roiH);
                         if (hasDarkSquareMarker(imgData)) {
-                            targets[key].classList.add('detected');
+                            tEl.classList.add('detected');
                             alignedCount++;
                         } else {
-                            targets[key].classList.remove('detected');
+                            tEl.classList.remove('detected');
                         }
                     } catch(err) {}
                 }
 
                 if (alignedCount === 4) {
                     alignmentFrames++;
-                    statusEl.innerText = `✨ Aligned! Hold steady (${Math.round((alignmentFrames/REQUIRED_STEADY_FRAMES)*100)}%)`;
+                    statusEl.innerText = `✨ Aligned! Holding steady...`;
                     statusEl.classList.add('aligned');
 
                     if (alignmentFrames >= REQUIRED_STEADY_FRAMES) {
@@ -171,19 +227,25 @@ INDEX_HTML = """<!DOCTYPE html>
             requestAnimationFrame(scanLoop);
         }
 
+        // Forgiving detection logic for LaTeX black corner boxes
         function hasDarkSquareMarker(imgData) {
             const data = imgData.data;
             let darkPixels = 0;
-            const totalPixels = data.length / 4;
+            let sampledCount = 0;
 
             for (let i = 0; i < data.length; i += 16) {
                 const r = data[i];
                 const g = data[i + 1];
                 const b = data[i + 2];
-                if ((r + g + b) / 3 < 85) darkPixels++;
+                const brightness = (r + g + b) / 3;
+                sampledCount++;
+
+                if (brightness < 120) { // Tolerant threshold for ambient light/shadows
+                    darkPixels++;
+                }
             }
-            const ratio = darkPixels / (totalPixels / 4);
-            return ratio > 0.10 && ratio < 0.70;
+            const ratio = darkPixels / sampledCount;
+            return ratio > 0.04 && ratio < 0.85; // Flexible coverage allowance
         }
 
         function executeAutoCapture(ctx) {
@@ -219,7 +281,7 @@ except Exception as e:
     st.stop()
 
 # --- 3. AUTO-SCANNER DISPLAY & CAPTURE ---
-st.caption("Tap the button to enable camera. Position the 4 corner squares into the yellow target boxes.")
+st.caption("Align the 4 LaTeX corner squares inside the yellow boxes to auto-scan.")
 captured_base64 = camera_scanner(key="auto_scanner")
 
 uploaded_file = st.file_uploader("Or select photo manually from library:", type=["jpg", "jpeg", "png"], key="fallback_upload")
