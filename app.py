@@ -1,4 +1,6 @@
 import streamlit as st
+import streamlit.components.v1 as components
+import os
 import json
 import time
 import base64
@@ -10,7 +12,83 @@ st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar
 
 st.title("📱 Onramp Live Camera Grader")
 
-# API Key Check
+# --- 1. SETUP CUSTOM CAMERA COMPONENT (HTML + JS BRIDGE) ---
+COMPONENT_DIR = "camera_component"
+if not os.path.exists(COMPONENT_DIR):
+    os.makedirs(COMPONENT_DIR)
+
+INDEX_HTML = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body { margin: 0; padding: 0; background: transparent; font-family: sans-serif; }
+        .container { position: relative; width: 100%; max-width: 500px; margin: 0 auto; overflow: hidden; border-radius: 12px; border: 2px solid #4A5568; background-color: #000; }
+        video { width: 100%; max-height: 380px; object-fit: cover; display: block; }
+        button { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 80%; padding: 14px 20px; background-color: #0066CC; color: white; border: none; border-radius: 30px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.5); z-index: 10; }
+        button:active { background-color: #004C99; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <video id="webcam" autoplay playsinline></video>
+        <button id="snap">📸 Capture & Grade Worksheet</button>
+        <canvas id="canvas" style="display:none;"></canvas>
+    </div>
+
+    <script>
+        function sendToStreamlit(value) {
+            window.parent.postMessage({
+                isStreamlitMessage: true,
+                type: "streamlit:setComponentValue",
+                value: value
+            }, "*");
+        }
+
+        // Set frame height in Streamlit
+        window.parent.postMessage({
+            isStreamlitMessage: true,
+            type: "streamlit:setFrameHeight",
+            height: 420
+        }, "*");
+
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const snapBtn = document.getElementById('snap');
+
+        navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false
+        }).then(stream => {
+            video.srcObject = stream;
+        }).catch(err => {
+            console.error("Camera access error:", err);
+        });
+
+        snapBtn.addEventListener('click', () => {
+            snapBtn.innerText = "⏳ Processing Photo...";
+            snapBtn.style.backgroundColor = "#4A5568";
+
+            canvas.width = video.videoWidth || 1280;
+            canvas.height = video.videoHeight || 720;
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            
+            // Send base64 image data back to Python
+            sendToStreamlit(dataUrl);
+        });
+    </script>
+</body>
+</html>
+"""
+
+with open(os.path.join(COMPONENT_DIR, "index.html"), "w") as f:
+    f.write(INDEX_HTML)
+
+camera_component = components.declare_component("camera_component", path=COMPONENT_DIR)
+
+# --- 2. API KEY SETUP ---
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
@@ -26,52 +104,11 @@ except Exception as e:
     st.error(f"API Client Error: {e}")
     st.stop()
 
-# Camera viewfinder with floating shutter button
-camera_html = """
-<div style="position: relative; width: 100%; max-width: 500px; margin: 0 auto; overflow: hidden; border-radius: 12px; border: 2px solid #4A5568; background-color: #000;">
-    <video id="webcam" autoplay playsinline style="width: 100%; max-height: 380px; object-fit: cover; display: block;"></video>
-    <button id="snap" style="position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 80%; padding: 14px 20px; background-color: #0066CC; color: white; border: none; border-radius: 30px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.5); z-index: 10;">
-        📸 Capture & Grade Worksheet
-    </button>
-    <canvas id="canvas" style="display:none;"></canvas>
-</div>
+# --- 3. RENDER CAMERA & CAPTURE ---
+captured_base64 = camera_component(key="live_cam")
 
-<script>
-    const video = document.getElementById('webcam');
-    const canvas = document.getElementById('canvas');
-    const snapBtn = document.getElementById('snap');
-
-    navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-    }).then(stream => {
-        video.srcObject = stream;
-    }).catch(err => {
-        console.error("Camera access error:", err);
-    });
-
-    snapBtn.addEventListener('click', () => {
-        canvas.width = video.videoWidth || 1280;
-        canvas.height = video.videoHeight || 720;
-        const context = canvas.getContext('2d');
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        
-        window.parent.postMessage({
-            type: "streamlit:setComponentValue",
-            value: dataUrl
-        }, "*");
-    });
-</script>
-"""
-
-# Render embedded viewfinder container
-captured_base64 = st.components.v1.html(camera_html, height=420)
-
-# Alternative standard file uploader as fallback below viewfinder
 uploaded_file = st.file_uploader("Or select photo from library:", type=["jpg", "jpeg", "png"], key="fallback_upload")
 
-# Extract image bytes
 image_bytes = None
 if captured_base64 and isinstance(captured_base64, str) and captured_base64.startswith("data:image"):
     base64_data = captured_base64.split(",")[1]
@@ -79,7 +116,7 @@ if captured_base64 and isinstance(captured_base64, str) and captured_base64.star
 elif uploaded_file:
     image_bytes = uploaded_file.getvalue()
 
-# Grading Logic
+# --- 4. GEMINI GRADING LOGIC ---
 if image_bytes:
     MASTER_PROMPT = """
     You are an expert high school math teacher grading a daily 'Onramp' practice worksheet.
@@ -102,7 +139,7 @@ if image_bytes:
 
     image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
 
-    with st.spinner("⚡ Processing worksheet..."):
+    with st.spinner("⚡ Reading sheet & grading..."):
         try:
             response = client.models.generate_content(
                 model="gemini-3.8-flash",
