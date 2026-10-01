@@ -26,12 +26,11 @@ except Exception as e:
     st.error(f"API Client Error: {e}")
     st.stop()
 
-# Live Rear Camera Viewfinder (HTML5 + WebRTC)
+# Camera viewfinder with floating shutter button
 camera_html = """
-<div style="text-align: center; max-width: 100%;">
-    <video id="webcam" autoplay playsinline style="width: 100%; max-width: 500px; border-radius: 12px; border: 2px solid #4A5568;"></video>
-    <br>
-    <button id="snap" style="margin-top: 12px; width: 100%; max-width: 500px; padding: 14px; background-color: #0066CC; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer;">
+<div style="position: relative; width: 100%; max-width: 500px; margin: 0 auto; overflow: hidden; border-radius: 12px; border: 2px solid #4A5568; background-color: #000;">
+    <video id="webcam" autoplay playsinline style="width: 100%; max-height: 380px; object-fit: cover; display: block;"></video>
+    <button id="snap" style="position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 80%; padding: 14px 20px; background-color: #0066CC; color: white; border: none; border-radius: 30px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.5); z-index: 10;">
         📸 Capture & Grade Worksheet
     </button>
     <canvas id="canvas" style="display:none;"></canvas>
@@ -42,9 +41,8 @@ camera_html = """
     const canvas = document.getElementById('canvas');
     const snapBtn = document.getElementById('snap');
 
-    // Request high-res rear camera
     navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
     }).then(stream => {
         video.srcObject = stream;
@@ -53,13 +51,12 @@ camera_html = """
     });
 
     snapBtn.addEventListener('click', () => {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+        canvas.width = video.videoWidth || 1280;
+        canvas.height = video.videoHeight || 720;
         const context = canvas.getContext('2d');
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
         const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
         
-        // Pass base64 image data to Streamlit
         window.parent.postMessage({
             type: "streamlit:setComponentValue",
             value: dataUrl
@@ -68,22 +65,19 @@ camera_html = """
 </script>
 """
 
-# Render embedded viewfinder
+# Render embedded viewfinder container
 captured_base64 = st.components.v1.html(camera_html, height=420)
 
-# Alternative standard camera input as fallback
-if not captured_base64:
-    captured_image = st.camera_input("Or tap here to toggle built-in camera:", key="std_cam")
-else:
-    captured_image = None
+# Alternative standard file uploader as fallback below viewfinder
+uploaded_file = st.file_uploader("Or select photo from library:", type=["jpg", "jpeg", "png"], key="fallback_upload")
 
-# Extract image bytes from captured frame
+# Extract image bytes
 image_bytes = None
 if captured_base64 and isinstance(captured_base64, str) and captured_base64.startswith("data:image"):
     base64_data = captured_base64.split(",")[1]
     image_bytes = base64.b64decode(base64_data)
-elif captured_image:
-    image_bytes = captured_image.getvalue()
+elif uploaded_file:
+    image_bytes = uploaded_file.getvalue()
 
 # Grading Logic
 if image_bytes:
