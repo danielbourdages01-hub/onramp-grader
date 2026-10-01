@@ -7,31 +7,30 @@ from google.genai import types
 
 st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar_state="collapsed")
 
-st.title("📱 Onramp Daily Worksheet Auto-Grader")
-st.write("Snap or upload student worksheets to grade automatically.")
+st.title("📱 Onramp Instant Camera Grader")
 
-# 1. Automatically load API Key from Streamlit Secrets if available
+# Load API Key from Secrets or Sidebar
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
     api_key = st.sidebar.text_input("Google AI Studio API Key", type="password")
 
-# Optional Answer Key Override
-optional_key = st.sidebar.text_area(
-    "Optional Answer Key Override", 
-    placeholder="Leave blank! The AI automatically solves the printed LaTeX problems.",
-    height=100
-)
-
 if not api_key:
-    st.info("👈 Please enter your Google AI Studio API Key or set up Streamlit Secrets to begin.")
+    st.info("👈 Please set up Streamlit Secrets or enter your API Key to begin.")
     st.stop()
 
 try:
     client = genai.Client(api_key=api_key)
 except Exception as e:
-    st.error(f"API Client Initialization Error: {e}")
+    st.error(f"API Client Error: {e}")
     st.stop()
+
+# Sidebar Override Option
+optional_key = st.sidebar.text_area(
+    "Optional Answer Key Override", 
+    placeholder="Leave blank! The AI reads and solves printed problems automatically.",
+    height=100
+)
 
 MASTER_PROMPT = f"""
 You are an expert high school math teacher grading a daily 'Onramp' practice worksheet.
@@ -54,78 +53,82 @@ Output JSON strictly using this format:
     "student_name": "Extracted Name or Unknown",
     "score": 3,
     "status": "Mastered",
-    "feedback": "Brief, actionable feedback note for the student highlighting correct work or specific conceptual mistakes."
+    "feedback": "Brief, actionable feedback note highlighting correct work or specific conceptual mistakes."
 }}
 """
 
-uploaded_files = st.file_uploader(
-    "Snap or Upload Worksheet Photos", 
-    type=["jpg", "jpeg", "png"], 
-    accept_multiple_files=True
-)
+# Live Camera Viewfinder
+captured_image = st.camera_input("Point camera at worksheet:")
 
-if uploaded_files and st.button("Grade Worksheets"):
-    results = []
+if captured_image:
+    file_bytes = captured_image.getvalue()
+    image_part = types.Part.from_bytes(
+        data=file_bytes,
+        mime_type="image/jpeg"
+    )
 
-    for uploaded_file in uploaded_files:
-        file_bytes = uploaded_file.getvalue()
-        image_part = types.Part.from_bytes(
-            data=file_bytes,
-            mime_type=uploaded_file.type or "image/jpeg"
-        )
+    response = None
+    last_exception = None
+    max_retries = 3
 
-        response = None
-        last_exception = None
-        max_retries = 5
-
+    with st.spinner("⚡ Reading sheet, solving problems, & grading..."):
         for attempt in range(1, max_retries + 1):
             try:
-                with st.spinner(f"Grading {uploaded_file.name} (Attempt {attempt}/{max_retries})..."):
-                    response = client.models.generate_content(
-                        model="gemini-3.8-flash",
-                        contents=[image_part, MASTER_PROMPT],
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json"
-                        )
+                response = client.models.generate_content(
+                    model="gemini-3.8-flash",
+                    contents=[image_part, MASTER_PROMPT],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
                     )
-                    if response and response.text:
-                        break
+                )
+                if response and response.text:
+                    break
             except Exception as err:
                 last_exception = err
-                if "503" in str(err) or "UNAVAILABLE" in str(err):
-                    wait_time = 2 ** attempt
-                    st.warning(f"Server busy. Retrying in {wait_time}s...")
-                    time.sleep(wait_time)
-                else:
-                    time.sleep(2)
+                time.sleep(1)
 
-        if not response or not response.text:
-            st.error(f"Error processing {uploaded_file.name}: {last_exception}")
-            continue
-
+    if response and response.text:
         try:
             data = json.loads(response.text)
             
-            row = {
-                "File": uploaded_file.name,
+            # Display Grade Card
+            st.divider()
+            st.subheader(f"👤 Student: {data.get('student_name', 'Unknown')}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(label="Score", value=f"{data.get('score', 0)} / 3")
+            with col2:
+                st.metric(label="Status", value=data.get('status', 'Unknown'))
+            
+            st.info(f"**Feedback:** {data.get('feedback', '')}")
+            
+            # Save session history for quick export
+            if "grade_history" not in st.session_state:
+                st.session_state["grade_history"] = []
+                
+            st.session_state["grade_history"].append({
                 "Student Name": data.get("student_name", "Unknown"),
-                "Score (0-3)": data.get("score", 0),
+                "Score": data.get("score", 0),
                 "Status": data.get("status", "Unknown"),
                 "Feedback": data.get("feedback", "")
-            }
-            results.append(row)
+            })
+
+            # Show session gradebook
+            st.divider()
+            st.subheader("📋 Session Gradebook")
+            df = pd.DataFrame(st.session_state["grade_history"])
+            st.dataframe(df, use_container_width=True)
+
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Session Grades CSV",
+                data=csv,
+                file_name="session_grades.csv",
+                mime="text/csv"
+            )
+
         except Exception as parse_err:
-            st.error(f"Error parsing response for {uploaded_file.name}: {parse_err}")
-
-    if results:
-        df = pd.DataFrame(results)
-        st.subheader("Grading Results")
-        st.dataframe(df, use_container_width=True)
-
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download Gradebook CSV",
-            data=csv,
-            file_name="onramp_daily_grades.csv",
-            mime="text/csv"
-        )
+            st.error(f"Parsing Error: {parse_err}")
+    else:
+        st.error(f"Grading failed: {last_exception}")
