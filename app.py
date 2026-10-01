@@ -10,12 +10,11 @@ st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar
 
 st.title("📱 Onramp Auto-Scan Camera Grader")
 
-# --- 1. CREATE COMPACT, ACCURATE AUTO-CAMERA COMPONENT ---
+# --- 1. CREATE DOCUMENT EDGE-DETECTION CAMERA COMPONENT ---
 COMPONENT_DIR = "auto_camera_component"
 if not os.path.exists(COMPONENT_DIR):
     os.makedirs(COMPONENT_DIR)
 
-# Updated CSS for Portrait aspect ratio & JavaScript for strict detection
 INDEX_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -24,69 +23,66 @@ INDEX_HTML = """<!DOCTYPE html>
     <style>
         body { margin: 0; padding: 0; background: #111; font-family: system-ui, -apple-system, sans-serif; color: white; }
         
-        /* Fixed: Portrait aspect ratio for 8.5x11 sheets */
+        /* Main Viewfinder Box */
         .viewfinder { 
             position: relative; 
             width: 100%; 
-            max-width: 340px; 
-            height: 440px; 
+            max-width: 320px; 
+            height: 430px; 
             margin: 0 auto; 
             overflow: hidden; 
-            border-radius: 14px; 
+            border-radius: 16px; 
             background: #000; 
             display: flex; 
             align-items: center; 
             justify-content: center; 
-            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.6);
         }
         
         video { width: 100%; height: 100%; object-fit: cover; display: none; background: #000; }
         
         #startBtn { 
-            padding: 12px 24px; 
+            padding: 14px 28px; 
             font-size: 15px; 
             font-weight: 700; 
             background: #0066CC; 
             color: white; 
             border: none; 
-            border-radius: 20px; 
+            border-radius: 24px; 
             cursor: pointer; 
             z-index: 30; 
-            box-shadow: 0 4px 12px rgba(0,102,204,0.4); 
+            box-shadow: 0 4px 14px rgba(0,102,204,0.5); 
         }
         #startBtn:active { transform: scale(0.96); }
 
-        /* Larger 56px x 56px target boxes for high-visibility anchors */
-        .target { 
+        /* Full Page Document Guide Box */
+        .doc-frame { 
             position: absolute; 
-            width: 56px; 
-            height: 56px; 
+            width: 82%; 
+            height: 82%; 
             border: 3px dashed #FFD700; 
-            border-radius: 8px; 
+            border-radius: 12px; 
             box-sizing: border-box; 
-            transition: all 0.15s ease; 
+            transition: all 0.2s ease; 
             z-index: 10; 
-            display: none; 
-        }
-        .target.detected { 
-            border: 4px solid #00FF66; 
-            background-color: rgba(0, 255, 102, 0.35); 
-            box-shadow: 0 0 16px #00FF66; 
+            display: none;
+            pointer-events: none;
         }
         
-        /* Symmetric placement matching uniform 0.5in LaTeX page margins */
-        #tl { top: 22px; left: 22px; }
-        #tr { top: 22px; right: 22px; }
-        #bl { bottom: 65px; left: 22px; }
-        #br { bottom: 65px; right: 22px; }
+        /* Locked-in visual indicator */
+        .doc-frame.locked { 
+            border: 4px solid #00FF66; 
+            background-color: rgba(0, 255, 102, 0.12); 
+            box-shadow: 0 0 20px #00FF66, inset 0 0 15px rgba(0,255,102,0.2); 
+        }
 
         .status-bar { 
             position: absolute; 
             bottom: 12px; 
             left: 50%; 
             transform: translateX(-50%); 
-            width: 90%; 
-            padding: 8px 12px; 
+            width: 88%; 
+            padding: 10px 14px; 
             background: rgba(0,0,0,0.85); 
             color: #FFF; 
             text-align: center; 
@@ -105,12 +101,10 @@ INDEX_HTML = """<!DOCTYPE html>
         <button id="startBtn" onclick="startCamera()">📷 Tap to Start Rear Camera</button>
         <video id="webcam" autoplay playsinline muted></video>
         
-        <div id="tl" class="target"></div>
-        <div id="tr" class="target"></div>
-        <div id="bl" class="target"></div>
-        <div id="br" class="target"></div>
+        <!-- Whole Document Frame Guide -->
+        <div id="docFrame" class="doc-frame"></div>
 
-        <div id="status" class="status-bar">🎯 Align corners with yellow boxes</div>
+        <div id="status" class="status-bar">📄 Place sheet inside the frame</div>
         <canvas id="procCanvas" style="display:none;"></canvas>
     </div>
 
@@ -120,32 +114,23 @@ INDEX_HTML = """<!DOCTYPE html>
         }
         
         sendToStreamlit("streamlit:componentReady", { apiVersion: 1 });
-        // Fixed: Adjusted height to accommodate the taller portrait viewfinder
         sendToStreamlit("streamlit:setFrameHeight", { height: 460 });
 
         const video = document.getElementById('webcam');
         const canvas = document.getElementById('procCanvas');
         const statusEl = document.getElementById('status');
         const startBtn = document.getElementById('startBtn');
-        const vfEl = document.getElementById('viewfinder');
-        
-        const targets = {
-            tl: document.getElementById('tl'),
-            tr: document.getElementById('tr'),
-            bl: document.getElementById('bl'),
-            br: document.getElementById('br')
-        };
+        const docFrame = document.getElementById('docFrame');
 
         let isCaptured = false;
         let alignmentFrames = 0;
-        // Fixed: Increased required frames from 5 to 12 so the user must hold steady to capture
-        const REQUIRED_STEADY_FRAMES = 12; 
+        const REQUIRED_STEADY_FRAMES = 12; // ~0.4s steady hold to complete scan
 
         async function startCamera() {
             startBtn.style.display = "none";
             video.style.display = "block";
             statusEl.style.display = "block";
-            for (let k in targets) targets[k].style.display = "block";
+            docFrame.style.display = "block";
 
             const constraintsOptions = [
                 { video: { facingMode: { exact: "environment" } }, audio: false },
@@ -184,82 +169,74 @@ INDEX_HTML = """<!DOCTYPE html>
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
                 const videoRect = video.getBoundingClientRect();
+                const frameRect = docFrame.getBoundingClientRect();
+
                 const scaleX = canvas.width / videoRect.width;
                 const scaleY = canvas.height / videoRect.height;
 
-                let alignedCount = 0;
+                // Map document box ROI to canvas pixel space
+                const roiX = Math.max(0, (frameRect.left - videoRect.left) * scaleX);
+                const roiY = Math.max(0, (frameRect.top - videoRect.top) * scaleY);
+                const roiW = Math.min(canvas.width - roiX, frameRect.width * scaleX);
+                const roiH = Math.min(canvas.height - roiY, frameRect.height * scaleY);
 
-                for (let key in targets) {
-                    const tEl = targets[key];
-                    const tRect = tEl.getBoundingClientRect();
+                try {
+                    const imgData = ctx.getImageData(roiX, roiY, roiW, roiH);
+                    
+                    if (detectPaperSheet(imgData)) {
+                        alignmentFrames++;
+                        docFrame.classList.add('locked');
+                        statusEl.innerText = `🔒 Locked! Hold steady... (${alignmentFrames}/${REQUIRED_STEADY_FRAMES})`;
+                        statusEl.classList.add('aligned');
 
-                    const roiX = Math.max(0, (tRect.left - videoRect.left) * scaleX);
-                    const roiY = Math.max(0, (tRect.top - videoRect.top) * scaleY);
-                    const roiW = Math.min(canvas.width - roiX, tRect.width * scaleX);
-                    const roiH = Math.min(canvas.height - roiY, tRect.height * scaleY);
-
-                    try {
-                        const imgData = ctx.getImageData(roiX, roiY, roiW, roiH);
-                        if (hasDarkSquareMarker(imgData)) {
-                            tEl.classList.add('detected');
-                            alignedCount++;
-                        } else {
-                            tEl.classList.remove('detected');
+                        if (alignmentFrames >= REQUIRED_STEADY_FRAMES) {
+                            isCaptured = true;
+                            executeAutoCapture(ctx);
+                            return;
                         }
-                    } catch(err) {}
-                }
-
-                if (alignedCount === 4) {
-                    alignmentFrames++;
-                    statusEl.innerText = `✨ Hold steady! (${alignmentFrames}/${REQUIRED_STEADY_FRAMES})`;
-                    statusEl.classList.add('aligned');
-
-                    if (alignmentFrames >= REQUIRED_STEADY_FRAMES) {
-                        isCaptured = true;
-                        executeAutoCapture(ctx);
-                        return;
+                    } else {
+                        alignmentFrames = 0;
+                        docFrame.classList.remove('locked');
+                        statusEl.innerText = "📄 Place sheet inside the frame";
+                        statusEl.classList.remove('aligned');
                     }
-                } else {
-                    alignmentFrames = 0;
-                    statusEl.innerText = `🎯 Align corners with yellow boxes (${alignedCount}/4)`;
-                    statusEl.classList.remove('aligned');
-                }
+                } catch(err) {}
             }
             requestAnimationFrame(scanLoop);
         }
 
-        // Fixed: Strict "Ink AND Paper" detection logic
-        function hasDarkSquareMarker(imgData) {
+        // Evaluates paper document characteristics within the viewfinder box
+        function detectPaperSheet(imgData) {
             const data = imgData.data;
-            let darkPixels = 0;
-            let lightPixels = 0;
-            let sampledCount = 0;
+            let brightCount = 0;
+            let darkCount = 0;
+            let totalSampled = 0;
 
+            // Sample every 16th pixel for real-time performance
             for (let i = 0; i < data.length; i += 16) {
                 const r = data[i];
                 const g = data[i + 1];
                 const b = data[i + 2];
-                const brightness = (r + g + b) / 3;
-                sampledCount++;
+                const luminance = (r * 0.299 + g * 0.587 + b * 0.114);
+                totalSampled++;
 
-                if (brightness < 90) { // Strict threshold for black ink/box
-                    darkPixels++;
-                } else if (brightness > 150) { // Strict threshold for white paper
-                    lightPixels++;
+                if (luminance > 140) {
+                    brightCount++; // White paper content
+                } else if (luminance < 90) {
+                    darkCount++;   // Printed text, lines, math diagrams
                 }
             }
-            
-            const darkRatio = darkPixels / sampledCount;
-            const lightRatio = lightPixels / sampledCount;
-            
-            // For a valid corner, the target area MUST contain a mix of dark ink (10% to 60%) 
-            // AND the surrounding white paper background (>25%). 
-            // This prevents solid dark backgrounds (like a desk or shadow) from false-triggering.
-            return (darkRatio > 0.10 && darkRatio < 0.60 && lightRatio > 0.25);
+
+            const brightRatio = brightCount / totalSampled;
+            const darkRatio = darkCount / totalSampled;
+
+            // A valid document inside the frame should be predominantly light (paper),
+            // accompanied by a smaller proportion of dark regions (printed text/handwriting)
+            return (brightRatio >= 0.55 && darkRatio >= 0.05 && darkRatio <= 0.35);
         }
 
         function executeAutoCapture(ctx) {
-            statusEl.innerText = "📸 Captured! Processing...";
+            statusEl.innerText = "📸 Scanned! Processing sheet...";
             statusEl.style.background = "#0288D1";
             const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
             sendToStreamlit("streamlit:setComponentValue", { value: dataUrl });
@@ -291,7 +268,7 @@ except Exception as e:
     st.stop()
 
 # --- 3. AUTO-SCANNER DISPLAY & CAPTURE ---
-st.caption("Align the 4 LaTeX corner squares inside the yellow boxes to auto-scan.")
+st.caption("Fit the worksheet inside the box. When it locks in green, hold still to auto-scan.")
 captured_base64 = camera_scanner(key="auto_scanner")
 
 uploaded_file = st.file_uploader("Or select photo manually from library:", type=["jpg", "jpeg", "png"], key="fallback_upload")
@@ -329,7 +306,7 @@ if image_bytes:
     with st.spinner("⚡ Reading sheet & grading..."):
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 contents=[image_part, MASTER_PROMPT],
                 config=types.GenerateContentConfig(response_mime_type="application/json")
             )
