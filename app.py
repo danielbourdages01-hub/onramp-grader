@@ -10,7 +10,7 @@ st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar
 
 st.title("📱 Onramp Auto-Scan Camera Grader")
 
-# --- 1. CREATE CUSTOM CAMERA COMPONENT WITH REAL-TIME SCANNER ---
+# --- 1. CREATE CUSTOM CAMERA COMPONENT WITH MOBILE COMPATIBILITY ---
 COMPONENT_DIR = "auto_camera_component"
 if not os.path.exists(COMPONENT_DIR):
     os.makedirs(COMPONENT_DIR)
@@ -19,13 +19,18 @@ INDEX_HTML = """<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body { margin: 0; padding: 0; background: #111; font-family: system-ui, -apple-system, sans-serif; color: white; }
-        .viewfinder { position: relative; width: 100%; max-width: 500px; margin: 0 auto; overflow: hidden; border-radius: 12px; background: #000; min-height: 380px; }
-        video { width: 100%; height: auto; display: block; object-fit: cover; background: #222; }
+        .viewfinder { position: relative; width: 100%; max-width: 500px; margin: 0 auto; overflow: hidden; border-radius: 12px; background: #000; min-height: 380px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        video { width: 100%; height: auto; display: none; object-fit: cover; background: #000; }
         
+        /* Start Button overlay for Mobile Permission requirements */
+        #startBtn { padding: 14px 28px; font-size: 16px; font-weight: bold; background: #0066CC; color: white; border: none; border-radius: 25px; cursor: pointer; z-index: 30; box-shadow: 0 4px 12px rgba(0,102,204,0.4); }
+        #startBtn:active { transform: scale(0.96); }
+
         /* 4 Corner Target Overlay Boxes */
-        .target { position: absolute; width: 44px; height: 44px; border: 3px dashed #FFD700; border-radius: 6px; box-sizing: border-box; transition: all 0.2s ease; z-index: 10; }
+        .target { position: absolute; width: 44px; height: 44px; border: 3px dashed #FFD700; border-radius: 6px; box-sizing: border-box; transition: all 0.2s ease; z-index: 10; display: none; }
         .target.detected { border: 4px solid #00FF66; background-color: rgba(0, 255, 102, 0.25); box-shadow: 0 0 12px #00FF66; }
         
         #tl { top: 20px; left: 20px; }
@@ -33,12 +38,13 @@ INDEX_HTML = """<!DOCTYPE html>
         #bl { bottom: 75px; left: 20px; }
         #br { bottom: 75px; right: 20px; }
 
-        .status-bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); width: 88%; padding: 10px; background: rgba(0,0,0,0.85); color: #FFF; text-align: center; border-radius: 16px; font-size: 13px; font-weight: 600; z-index: 20; border: 1px solid rgba(255,255,255,0.2); word-wrap: break-word; }
+        .status-bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); width: 88%; padding: 10px; background: rgba(0,0,0,0.85); color: #FFF; text-align: center; border-radius: 16px; font-size: 13px; font-weight: 600; z-index: 20; border: 1px solid rgba(255,255,255,0.2); word-wrap: break-word; display: none; }
         .status-bar.aligned { background: rgba(0, 200, 83, 0.95); color: #FFF; border-color: #00FF66; }
     </style>
 </head>
 <body>
     <div class="viewfinder">
+        <button id="startBtn" onclick="startCamera()">📷 Tap to Start Rear Camera</button>
         <video id="webcam" autoplay playsinline muted></video>
         
         <!-- Target Guides -->
@@ -47,12 +53,11 @@ INDEX_HTML = """<!DOCTYPE html>
         <div id="bl" class="target"></div>
         <div id="br" class="target"></div>
 
-        <div id="status" class="status-bar">⏳ Requesting camera permission...</div>
+        <div id="status" class="status-bar">🎯 Align 4 corner squares in yellow boxes</div>
         <canvas id="procCanvas" style="display:none;"></canvas>
     </div>
 
     <script>
-        // Native Streamlit Component Messaging Bridge
         function sendToStreamlit(type, data) {
             window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
         }
@@ -63,6 +68,7 @@ INDEX_HTML = """<!DOCTYPE html>
         const video = document.getElementById('webcam');
         const canvas = document.getElementById('procCanvas');
         const statusEl = document.getElementById('status');
+        const startBtn = document.getElementById('startBtn');
         const targets = {
             tl: document.getElementById('tl'),
             tr: document.getElementById('tr'),
@@ -74,30 +80,39 @@ INDEX_HTML = """<!DOCTYPE html>
         let alignmentFrames = 0;
         const REQUIRED_STEADY_FRAMES = 10;
 
-        async function initCamera() {
-            try {
-                // Request rear camera first
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-                    audio: false
-                });
-                video.srcObject = stream;
-            } catch (e1) {
-                console.warn("Rear camera constraint failed, using fallback:", e1);
+        async function startCamera() {
+            startBtn.style.display = "none";
+            video.style.display = "block";
+            statusEl.style.display = "block";
+            for (let k in targets) targets[k].style.display = "block";
+
+            // Mobile-compatible WebRTC constraints for Rear Camera
+            const constraintsOptions = [
+                { video: { facingMode: { exact: "environment" } }, audio: false },
+                { video: { facingMode: "environment" }, audio: false },
+                { video: true, audio: false }
+            ];
+
+            let stream = null;
+            for (let config of constraintsOptions) {
                 try {
-                    // Fallback to any default video device
-                    const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-                    video.srcObject = fallbackStream;
-                } catch (e2) {
-                    statusEl.innerText = "❌ Camera Blocked: " + (e2.message || e2.name);
-                    statusEl.style.background = "#B71C1C";
-                    return;
+                    stream = await navigator.mediaDevices.getUserMedia(config);
+                    if (stream) break;
+                } catch (e) {
+                    console.warn("Camera config attempt failed:", e);
                 }
             }
 
+            if (!stream) {
+                statusEl.style.display = "block";
+                statusEl.innerText = "❌ Camera Access Denied. Ensure page is loaded via HTTPS.";
+                statusEl.style.background = "#B71C1C";
+                return;
+            }
+
+            video.srcObject = stream;
             video.onloadedmetadata = () => {
                 video.play();
-                statusEl.innerText = "🎯 Align 4 corner squares in yellow boxes";
                 requestAnimationFrame(scanLoop);
             };
         }
@@ -177,8 +192,6 @@ INDEX_HTML = """<!DOCTYPE html>
             const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
             sendToStreamlit("streamlit:setComponentValue", { value: dataUrl });
         }
-
-        initCamera();
     </script>
 </body>
 </html>
@@ -206,7 +219,7 @@ except Exception as e:
     st.stop()
 
 # --- 3. AUTO-SCANNER DISPLAY & CAPTURE ---
-st.caption("Point camera at worksheet. Position the 4 corner squares into the yellow target boxes.")
+st.caption("Tap the button to enable camera. Position the 4 corner squares into the yellow target boxes.")
 captured_base64 = camera_scanner(key="auto_scanner")
 
 uploaded_file = st.file_uploader("Or select photo manually from library:", type=["jpg", "jpeg", "png"], key="fallback_upload")
