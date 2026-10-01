@@ -1,15 +1,16 @@
 import streamlit as st
 import json
 import time
+import base64
 import pandas as pd
 from google import genai
 from google.genai import types
 
 st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar_state="collapsed")
 
-st.title("📱 Onramp Instant Worksheet Grader")
+st.title("📱 Onramp Live Camera Grader")
 
-# Load API Key from Secrets or Sidebar
+# API Key Check
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
@@ -25,122 +26,107 @@ except Exception as e:
     st.error(f"API Client Error: {e}")
     st.stop()
 
-# Optional Sidebar Override
-optional_key = st.sidebar.text_area(
-    "Optional Answer Key Override", 
-    placeholder="Leave blank! The AI reads and solves printed problems automatically.",
-    height=100
-)
+# Live Rear Camera Viewfinder (HTML5 + WebRTC)
+camera_html = """
+<div style="text-align: center; max-width: 100%;">
+    <video id="webcam" autoplay playsinline style="width: 100%; max-width: 500px; border-radius: 12px; border: 2px solid #4A5568;"></video>
+    <br>
+    <button id="snap" style="margin-top: 12px; width: 100%; max-width: 500px; padding: 14px; background-color: #0066CC; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer;">
+        📸 Capture & Grade Worksheet
+    </button>
+    <canvas id="canvas" style="display:none;"></canvas>
+</div>
 
-MASTER_PROMPT = f"""
-You are an expert high school math teacher grading a daily 'Onramp' practice worksheet.
+<script>
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('canvas');
+    const snapBtn = document.getElementById('snap');
 
-GRADING PROCEDURE:
-1. Extract the Student Name from the header box at the top.
-2. Read all printed mathematics questions/problems directly from the worksheet image.
-3. Solve each printed problem to establish ground-truth solutions.
-{"4. USE THIS SPECIFIC ANSWER KEY OVERRIDE:" + optional_key if optional_key.strip() else ""}
+    // Request high-res rear camera
+    navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false
+    }).then(stream => {
+        video.srcObject = stream;
+    }).catch(err => {
+        console.error("Camera access error:", err);
+    });
 
-SCORING RUBRIC (0 to 3 Points):
-- 3 | Mastered: Complete, correct reasoning, minor or no computational errors.
-- 2 | Developing: Complete, shows effort, but contains conceptual errors or key misunderstandings.
-- 1 | Incomplete: Started but under 50% finished, or minimal effort shown.
-- 0 | Missing: Not submitted, blank, or completely unreadable.
-
-OUTPUT FORMAT:
-Output JSON strictly using this format:
-{{
-    "student_name": "Extracted Name or Unknown",
-    "score": 3,
-    "status": "Mastered",
-    "feedback": "Brief, actionable feedback note highlighting correct work or specific conceptual mistakes."
-}}
+    snapBtn.addEventListener('click', () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext('2d');
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        
+        // Pass base64 image data to Streamlit
+        window.parent.postMessage({
+            type: "streamlit:setComponentValue",
+            value: dataUrl
+        }, "*");
+    });
+</script>
 """
 
-# Native Mobile Camera / File Input
-st.write("📸 **Tap below to open camera or choose a photo:**")
-uploaded_file = st.file_uploader(
-    "Take or Select Worksheet Photo", 
-    type=["jpg", "jpeg", "png"],
-    label_visibility="collapsed"
-)
+# Render embedded viewfinder
+captured_base64 = st.components.v1.html(camera_html, height=420)
 
-if uploaded_file:
-    file_bytes = uploaded_file.getvalue()
-    
-    # Preview captured photo
-    st.image(file_bytes, caption="Captured Worksheet", use_container_width=True)
+# Alternative standard camera input as fallback
+if not captured_base64:
+    captured_image = st.camera_input("Or tap here to toggle built-in camera:", key="std_cam")
+else:
+    captured_image = None
 
-    image_part = types.Part.from_bytes(
-        data=file_bytes,
-        mime_type=uploaded_file.type or "image/jpeg"
-    )
+# Extract image bytes from captured frame
+image_bytes = None
+if captured_base64 and isinstance(captured_base64, str) and captured_base64.startswith("data:image"):
+    base64_data = captured_base64.split(",")[1]
+    image_bytes = base64.b64decode(base64_data)
+elif captured_image:
+    image_bytes = captured_image.getvalue()
 
-    response = None
-    last_exception = None
-    max_retries = 3
+# Grading Logic
+if image_bytes:
+    MASTER_PROMPT = """
+    You are an expert high school math teacher grading a daily 'Onramp' practice worksheet.
 
-    with st.spinner("⚡ Reading sheet, solving problems, & grading..."):
-        for attempt in range(1, max_retries + 1):
-            try:
-                response = client.models.generate_content(
-                    model="gemini-3.8-flash",
-                    contents=[image_part, MASTER_PROMPT],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json"
-                    )
-                )
-                if response and response.text:
-                    break
-            except Exception as err:
-                last_exception = err
-                time.sleep(1)
+    GRADING PROCEDURE:
+    1. Extract Student Name from top header box.
+    2. Read all printed mathematics questions directly from worksheet image.
+    3. Solve printed problems to establish ground truth.
+    4. Grade handwritten student work on 0-3 scale:
+       - 3: Mastered | 2: Developing | 1: Incomplete | 0: Missing
 
-    if response and response.text:
+    OUTPUT FORMAT (Strict JSON):
+    {
+        "student_name": "Extracted Name or Unknown",
+        "score": 3,
+        "status": "Mastered",
+        "feedback": "Brief feedback note on student reasoning."
+    }
+    """
+
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+
+    with st.spinner("⚡ Processing worksheet..."):
         try:
-            data = json.loads(response.text)
-            
-            # Display Grade Card
-            st.divider()
-            st.subheader(f"👤 Student: {data.get('student_name', 'Unknown')}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric(label="Score", value=f"{data.get('score', 0)} / 3")
-            with col2:
-                st.metric(label="Status", value=data.get('status', 'Unknown'))
-            
-            st.info(f"**Feedback:** {data.get('feedback', '')}")
-            
-            # Store session history
-            if "grade_history" not in st.session_state:
-                st.session_state["grade_history"] = []
-                
-            # Avoid duplicate logs on page rerun
-            latest_entry = {
-                "Student Name": data.get("student_name", "Unknown"),
-                "Score": data.get("score", 0),
-                "Status": data.get("status", "Unknown"),
-                "Feedback": data.get("feedback", "")
-            }
-            if not st.session_state["grade_history"] or st.session_state["grade_history"][-1] != latest_entry:
-                st.session_state["grade_history"].append(latest_entry)
-
-            # Show accumulated session gradebook
-            st.divider()
-            st.subheader("📋 Session Gradebook")
-            df = pd.DataFrame(st.session_state["grade_history"])
-            st.dataframe(df, use_container_width=True)
-
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Session Grades CSV",
-                data=csv,
-                file_name="session_grades.csv",
-                mime="text/csv"
+            response = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=[image_part, MASTER_PROMPT],
+                config=types.GenerateContentConfig(response_mime_type="application/json")
             )
+            
+            if response and response.text:
+                data = json.loads(response.text)
+                
+                st.success("Grading Complete!")
+                st.subheader(f"👤 Student: {data.get('student_name', 'Unknown')}")
+                
+                col1, col2 = st.columns(2)
+                col1.metric("Score", f"{data.get('score', 0)} / 3")
+                col2.metric("Status", data.get('status', 'Unknown'))
+                
+                st.info(f"**Feedback:** {data.get('feedback', '')}")
 
-        except Exception as parse_err:
-            st.error(f"Parsing Error: {parse_err}")
-    else:
-        st.error(f"Grading failed: {last_exception}")
+        except Exception as e:
+            st.error(f"Grading error: {e}")
