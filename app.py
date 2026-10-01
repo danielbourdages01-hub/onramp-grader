@@ -7,7 +7,7 @@ from google.genai import types
 
 st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar_state="collapsed")
 
-st.title("📱 Onramp Instant Camera Grader")
+st.title("📱 Onramp Instant Worksheet Grader")
 
 # Load API Key from Secrets or Sidebar
 if "GEMINI_API_KEY" in st.secrets:
@@ -25,7 +25,7 @@ except Exception as e:
     st.error(f"API Client Error: {e}")
     st.stop()
 
-# Sidebar Override Option
+# Optional Sidebar Override
 optional_key = st.sidebar.text_area(
     "Optional Answer Key Override", 
     placeholder="Leave blank! The AI reads and solves printed problems automatically.",
@@ -57,14 +57,23 @@ Output JSON strictly using this format:
 }}
 """
 
-# Live Camera Viewfinder
-captured_image = st.camera_input("Point camera at worksheet:")
+# Native Mobile Camera / File Input
+st.write("📸 **Tap below to open camera or choose a photo:**")
+uploaded_file = st.file_uploader(
+    "Take or Select Worksheet Photo", 
+    type=["jpg", "jpeg", "png"],
+    label_visibility="collapsed"
+)
 
-if captured_image:
-    file_bytes = captured_image.getvalue()
+if uploaded_file:
+    file_bytes = uploaded_file.getvalue()
+    
+    # Preview captured photo
+    st.image(file_bytes, caption="Captured Worksheet", use_container_width=True)
+
     image_part = types.Part.from_bytes(
         data=file_bytes,
-        mime_type="image/jpeg"
+        mime_type=uploaded_file.type or "image/jpeg"
     )
 
     response = None
@@ -103,18 +112,21 @@ if captured_image:
             
             st.info(f"**Feedback:** {data.get('feedback', '')}")
             
-            # Save session history for quick export
+            # Store session history
             if "grade_history" not in st.session_state:
                 st.session_state["grade_history"] = []
                 
-            st.session_state["grade_history"].append({
+            # Avoid duplicate logs on page rerun
+            latest_entry = {
                 "Student Name": data.get("student_name", "Unknown"),
                 "Score": data.get("score", 0),
                 "Status": data.get("status", "Unknown"),
                 "Feedback": data.get("feedback", "")
-            })
+            }
+            if not st.session_state["grade_history"] or st.session_state["grade_history"][-1] != latest_entry:
+                st.session_state["grade_history"].append(latest_entry)
 
-            # Show session gradebook
+            # Show accumulated session gradebook
             st.divider()
             st.subheader("📋 Session Gradebook")
             df = pd.DataFrame(st.session_state["grade_history"])
