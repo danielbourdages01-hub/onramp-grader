@@ -5,24 +5,26 @@ import pandas as pd
 from google import genai
 from google.genai import types
 
-st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar_state="collapsed")
 
 st.title("📱 Onramp Daily Worksheet Auto-Grader")
-st.write("Snap or upload student worksheets. The AI automatically reads the printed questions, solves them, and grades student work.")
+st.write("Snap or upload student worksheets to grade automatically.")
 
-# Sidebar Configuration
-st.sidebar.header("Settings")
-api_key = st.sidebar.text_input("Google AI Studio API Key", type="password")
+# 1. Automatically load API Key from Streamlit Secrets if available
+if "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+else:
+    api_key = st.sidebar.text_input("Google AI Studio API Key", type="password")
 
 # Optional Answer Key Override
 optional_key = st.sidebar.text_area(
     "Optional Answer Key Override", 
-    placeholder="Leave blank! The AI will automatically solve the printed LaTeX problems. Only fill this in if you want to enforce specific solutions.",
-    height=120
+    placeholder="Leave blank! The AI automatically solves the printed LaTeX problems.",
+    height=100
 )
 
 if not api_key:
-    st.info("👈 Please enter your free Google AI Studio API Key in the sidebar to begin.")
+    st.info("👈 Please enter your Google AI Studio API Key or set up Streamlit Secrets to begin.")
     st.stop()
 
 try:
@@ -31,14 +33,13 @@ except Exception as e:
     st.error(f"API Client Initialization Error: {e}")
     st.stop()
 
-# Dynamic Master Prompt
 MASTER_PROMPT = f"""
 You are an expert high school math teacher grading a daily 'Onramp' practice worksheet.
 
 GRADING PROCEDURE:
 1. Extract the Student Name from the header box at the top.
 2. Read all printed mathematics questions/problems directly from the worksheet image.
-3. Solve each printed problem to establish the ground-truth solutions.
+3. Solve each printed problem to establish ground-truth solutions.
 {"4. USE THIS SPECIFIC ANSWER KEY OVERRIDE:" + optional_key if optional_key.strip() else ""}
 
 SCORING RUBRIC (0 to 3 Points):
