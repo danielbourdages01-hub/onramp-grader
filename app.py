@@ -56,10 +56,11 @@ INDEX_HTML = """<!DOCTYPE html>
         }
         #startBtn:active { transform: scale(0.96); }
 
+        /* Larger 56px x 56px target boxes for high-visibility anchors */
         .target { 
             position: absolute; 
-            width: 48px; 
-            height: 48px; 
+            width: 56px; 
+            height: 56px; 
             border: 3px dashed #FFD700; 
             border-radius: 8px; 
             box-sizing: border-box; 
@@ -69,15 +70,15 @@ INDEX_HTML = """<!DOCTYPE html>
         }
         .target.detected { 
             border: 4px solid #00FF66; 
-            background-color: rgba(0, 255, 102, 0.3); 
-            box-shadow: 0 0 14px #00FF66; 
+            background-color: rgba(0, 255, 102, 0.35); 
+            box-shadow: 0 0 16px #00FF66; 
         }
         
-        /* Adjusted positioning for the new taller portrait box */
-        #tl { top: 20px; left: 20px; }
-        #tr { top: 20px; right: 20px; }
-        #bl { bottom: 65px; left: 20px; }
-        #br { bottom: 65px; right: 20px; }
+        /* Symmetric placement matching uniform 0.5in LaTeX page margins */
+        #tl { top: 22px; left: 22px; }
+        #tr { top: 22px; right: 22px; }
+        #bl { bottom: 65px; left: 22px; }
+        #br { bottom: 65px; right: 22px; }
 
         .status-bar { 
             position: absolute; 
