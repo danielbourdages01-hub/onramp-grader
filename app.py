@@ -1,6 +1,5 @@
 import streamlit as st
 import json
-import time
 import base64
 import pandas as pd
 from google import genai
@@ -10,16 +9,7 @@ st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar
 
 st.title("📱 Onramp Live Camera Grader")
 
-# Hide the bridge input element from UI
-st.markdown("""
-    <style>
-        div[data-testid="stTextArea"]:has(textarea[aria-label="camera_payload"]) {
-            display: none;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-# API Key Setup
+# --- 1. API KEY SETUP ---
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
@@ -35,87 +25,20 @@ except Exception as e:
     st.error(f"API Client Error: {e}")
     st.stop()
 
-# Hidden text area bridge for JavaScript -> Python image payload
-captured_base64 = st.text_area("camera_payload", label_visibility="collapsed", key="cam_payload")
+# --- 2. NATIVE STREAMLIT CAMERA & FILE INPUT ---
+st.subheader("1. Take or Upload Photo")
+camera_photo = st.camera_input("Point camera at student worksheet and capture:")
 
-# Camera Viewfinder HTML (uses st.components.v1.html which grants full iframe camera permissions)
-camera_html = """
-<div style="position: relative; width: 100%; max-width: 500px; margin: 0 auto; overflow: hidden; border-radius: 12px; border: 2px solid #4A5568; background-color: #000;">
-    <video id="webcam" autoplay playsinline style="width: 100%; max-height: 380px; object-fit: cover; display: block;"></video>
-    <div id="err-msg" style="display:none; color: #ff6b6b; padding: 20px; text-align: center; font-size: 14px;">
-        ⚠️ Unable to access camera. Please ensure camera permissions are allowed in your browser settings.
-    </div>
-    <button id="snap" style="position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 80%; padding: 14px 20px; background-color: #0066CC; color: white; border: none; border-radius: 30px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.5); z-index: 10;">
-        📸 Capture & Grade Worksheet
-    </button>
-    <canvas id="canvas" style="display:none;"></canvas>
-</div>
-
-<script>
-    const video = document.getElementById('webcam');
-    const canvas = document.getElementById('canvas');
-    const snapBtn = document.getElementById('snap');
-    const errMsg = document.getElementById('err-msg');
-
-    // Request rear camera stream
-    navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-    }).then(stream => {
-        video.srcObject = stream;
-    }).catch(err => {
-        console.error("Camera access error:", err);
-        video.style.display = "none";
-        snapBtn.style.display = "none";
-        errMsg.style.display = "block";
-    });
-
-    // Send base64 payload to Streamlit text area
-    function passPayloadToStreamlit(base64Data) {
-        try {
-            const parentDoc = window.parent.document;
-            const targetArea = parentDoc.querySelector('textarea[aria-label="camera_payload"]');
-            if (targetArea) {
-                const nativeSetter = Object.getOwnPropertyDescriptor(
-                    window.HTMLTextAreaElement.prototype, 'value'
-                ).set;
-                nativeSetter.call(targetArea, base64Data);
-                targetArea.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-        } catch (e) {
-            console.error("Bridge error:", e);
-        }
-    }
-
-    snapBtn.addEventListener('click', () => {
-        snapBtn.innerText = "⏳ Reading Worksheet...";
-        snapBtn.style.backgroundColor = "#4A5568";
-
-        canvas.width = video.videoWidth || 1280;
-        canvas.height = video.videoHeight || 720;
-        const context = canvas.getContext('2d');
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        
-        passPayloadToStreamlit(dataUrl);
-    });
-</script>
-"""
-
-st.components.v1.html(camera_html, height=420)
-
-# Fallback file upload
 uploaded_file = st.file_uploader("Or select photo from library:", type=["jpg", "jpeg", "png"], key="fallback_upload")
 
 # Extract image bytes
 image_bytes = None
-if captured_base64 and isinstance(captured_base64, str) and captured_base64.startswith("data:image"):
-    base64_data = captured_base64.split(",")[1]
-    image_bytes = base64.b64decode(base64_data)
+if camera_photo:
+    image_bytes = camera_photo.getvalue()
 elif uploaded_file:
     image_bytes = uploaded_file.getvalue()
 
-# Grading Logic
+# --- 3. GEMINI GRADING LOGIC ---
 if image_bytes:
     MASTER_PROMPT = """
     You are an expert high school math teacher grading a daily 'Onramp' practice worksheet.
