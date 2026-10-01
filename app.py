@@ -10,7 +10,7 @@ st.set_page_config(page_title="Onramp AI Grader", layout="wide", initial_sidebar
 
 st.title("📱 Onramp Auto-Scan Camera Grader")
 
-# --- 1. CREATE DOCUMENT EDGE-DETECTION CAMERA COMPONENT ---
+# --- 1. CREATE MANUAL CAPTURE CAMERA COMPONENT WITH WORKSHEET OUTLINE ---
 COMPONENT_DIR = "auto_camera_component"
 if not os.path.exists(COMPONENT_DIR):
     os.makedirs(COMPONENT_DIR)
@@ -23,7 +23,6 @@ INDEX_HTML = """<!DOCTYPE html>
     <style>
         body { margin: 0; padding: 0; background: #111; font-family: system-ui, -apple-system, sans-serif; color: white; }
         
-        /* Main Viewfinder Box */
         .viewfinder { 
             position: relative; 
             width: 100%; 
@@ -55,7 +54,7 @@ INDEX_HTML = """<!DOCTYPE html>
         }
         #startBtn:active { transform: scale(0.96); }
 
-        /* Full Page Document Guide Box */
+        /* Fixed Visual Outline Guide for Page Alignment */
         .doc-frame { 
             position: absolute; 
             width: 82%; 
@@ -63,37 +62,37 @@ INDEX_HTML = """<!DOCTYPE html>
             border: 3px dashed #FFD700; 
             border-radius: 12px; 
             box-sizing: border-box; 
-            transition: all 0.2s ease; 
             z-index: 10; 
             display: none;
             pointer-events: none;
-        }
-        
-        /* Locked-in visual indicator */
-        .doc-frame.locked { 
-            border: 4px solid #00FF66; 
-            background-color: rgba(0, 255, 102, 0.12); 
-            box-shadow: 0 0 20px #00FF66, inset 0 0 15px rgba(0,255,102,0.2); 
+            box-shadow: inset 0 0 12px rgba(255, 215, 0, 0.2);
         }
 
-        .status-bar { 
+        /* Action bar containing manual capture button */
+        .action-bar { 
             position: absolute; 
             bottom: 12px; 
             left: 50%; 
             transform: translateX(-50%); 
-            width: 88%; 
-            padding: 10px 14px; 
-            background: rgba(0,0,0,0.85); 
-            color: #FFF; 
-            text-align: center; 
-            border-radius: 12px; 
-            font-size: 13px; 
-            font-weight: 600; 
+            width: 90%; 
             z-index: 20; 
-            border: 1px solid rgba(255,255,255,0.2); 
             display: none; 
+            text-align: center;
         }
-        .status-bar.aligned { background: rgba(0, 200, 83, 0.95); color: #FFF; border-color: #00FF66; }
+
+        #captureBtn {
+            width: 100%;
+            padding: 12px 18px;
+            font-size: 14px;
+            font-weight: 700;
+            background: #00C853;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,200,83,0.4);
+        }
+        #captureBtn:active { transform: scale(0.97); background: #00E676; }
     </style>
 </head>
 <body>
@@ -101,10 +100,14 @@ INDEX_HTML = """<!DOCTYPE html>
         <button id="startBtn" onclick="startCamera()">📷 Tap to Start Rear Camera</button>
         <video id="webcam" autoplay playsinline muted></video>
         
-        <!-- Whole Document Frame Guide -->
+        <!-- Worksheet Visual Guide Frame -->
         <div id="docFrame" class="doc-frame"></div>
 
-        <div id="status" class="status-bar">📄 Place sheet inside the frame</div>
+        <!-- Manual Capture Bar -->
+        <div id="actionBar" class="action-bar">
+            <button id="captureBtn" onclick="manualCapture()">📸 Tap to Capture & Grade</button>
+        </div>
+
         <canvas id="procCanvas" style="display:none;"></canvas>
     </div>
 
@@ -118,19 +121,16 @@ INDEX_HTML = """<!DOCTYPE html>
 
         const video = document.getElementById('webcam');
         const canvas = document.getElementById('procCanvas');
-        const statusEl = document.getElementById('status');
         const startBtn = document.getElementById('startBtn');
         const docFrame = document.getElementById('docFrame');
-
-        let isCaptured = false;
-        let alignmentFrames = 0;
-        const REQUIRED_STEADY_FRAMES = 12; // ~0.4s steady hold to complete scan
+        const actionBar = document.getElementById('actionBar');
+        const captureBtn = document.getElementById('captureBtn');
 
         async function startCamera() {
             startBtn.style.display = "none";
             video.style.display = "block";
-            statusEl.style.display = "block";
             docFrame.style.display = "block";
+            actionBar.style.display = "block";
 
             const constraintsOptions = [
                 { video: { facingMode: { exact: "environment" } }, audio: false },
@@ -147,99 +147,32 @@ INDEX_HTML = """<!DOCTYPE html>
             }
 
             if (!stream) {
-                statusEl.innerText = "❌ Camera Access Denied";
-                statusEl.style.background = "#B71C1C";
+                captureBtn.innerText = "❌ Camera Access Denied";
+                captureBtn.style.background = "#B71C1C";
+                captureBtn.disabled = true;
                 return;
             }
 
             video.srcObject = stream;
             video.onloadedmetadata = () => {
                 video.play();
-                requestAnimationFrame(scanLoop);
             };
         }
 
-        function scanLoop() {
-            if (isCaptured) return;
-
+        function manualCapture() {
             if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                captureBtn.innerText = "⚡ Capturing...";
+                captureBtn.style.background = "#0288D1";
+                captureBtn.disabled = true;
+
                 canvas.width = video.videoWidth || 640;
                 canvas.height = video.videoHeight || 480;
-                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                const ctx = canvas.getContext('2d');
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                const videoRect = video.getBoundingClientRect();
-                const frameRect = docFrame.getBoundingClientRect();
-
-                const scaleX = canvas.width / videoRect.width;
-                const scaleY = canvas.height / videoRect.height;
-
-                // Map document box ROI to canvas pixel space
-                const roiX = Math.max(0, (frameRect.left - videoRect.left) * scaleX);
-                const roiY = Math.max(0, (frameRect.top - videoRect.top) * scaleY);
-                const roiW = Math.min(canvas.width - roiX, frameRect.width * scaleX);
-                const roiH = Math.min(canvas.height - roiY, frameRect.height * scaleY);
-
-                try {
-                    const imgData = ctx.getImageData(roiX, roiY, roiW, roiH);
-                    
-                    if (detectPaperSheet(imgData)) {
-                        alignmentFrames++;
-                        docFrame.classList.add('locked');
-                        statusEl.innerText = `🔒 Locked! Hold steady... (${alignmentFrames}/${REQUIRED_STEADY_FRAMES})`;
-                        statusEl.classList.add('aligned');
-
-                        if (alignmentFrames >= REQUIRED_STEADY_FRAMES) {
-                            isCaptured = true;
-                            executeAutoCapture(ctx);
-                            return;
-                        }
-                    } else {
-                        alignmentFrames = 0;
-                        docFrame.classList.remove('locked');
-                        statusEl.innerText = "📄 Place sheet inside the frame";
-                        statusEl.classList.remove('aligned');
-                    }
-                } catch(err) {}
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+                sendToStreamlit("streamlit:setComponentValue", { value: dataUrl });
             }
-            requestAnimationFrame(scanLoop);
-        }
-
-        // Evaluates paper document characteristics within the viewfinder box
-        function detectPaperSheet(imgData) {
-            const data = imgData.data;
-            let brightCount = 0;
-            let darkCount = 0;
-            let totalSampled = 0;
-
-            // Sample every 16th pixel for real-time performance
-            for (let i = 0; i < data.length; i += 16) {
-                const r = data[i];
-                const g = data[i + 1];
-                const b = data[i + 2];
-                const luminance = (r * 0.299 + g * 0.587 + b * 0.114);
-                totalSampled++;
-
-                if (luminance > 140) {
-                    brightCount++; // White paper content
-                } else if (luminance < 90) {
-                    darkCount++;   // Printed text, lines, math diagrams
-                }
-            }
-
-            const brightRatio = brightCount / totalSampled;
-            const darkRatio = darkCount / totalSampled;
-
-            // A valid document inside the frame should be predominantly light (paper),
-            // accompanied by a smaller proportion of dark regions (printed text/handwriting)
-            return (brightRatio >= 0.55 && darkRatio >= 0.05 && darkRatio <= 0.35);
-        }
-
-        function executeAutoCapture(ctx) {
-            statusEl.innerText = "📸 Scanned! Processing sheet...";
-            statusEl.style.background = "#0288D1";
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-            sendToStreamlit("streamlit:setComponentValue", { value: dataUrl });
         }
     </script>
 </body>
@@ -267,8 +200,8 @@ except Exception as e:
     st.error(f"API Client Error: {e}")
     st.stop()
 
-# --- 3. AUTO-SCANNER DISPLAY & CAPTURE ---
-st.caption("Fit the worksheet inside the box. When it locks in green, hold still to auto-scan.")
+# --- 3. CAMERA DISPLAY & MANUAL CAPTURE ---
+st.caption("Align the worksheet within the yellow frame and tap the green button to capture.")
 captured_base64 = camera_scanner(key="auto_scanner")
 
 uploaded_file = st.file_uploader("Or select photo manually from library:", type=["jpg", "jpeg", "png"], key="fallback_upload")
