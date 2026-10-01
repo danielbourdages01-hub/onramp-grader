@@ -15,6 +15,7 @@ COMPONENT_DIR = "auto_camera_component"
 if not os.path.exists(COMPONENT_DIR):
     os.makedirs(COMPONENT_DIR)
 
+# Updated CSS for Portrait aspect ratio & JavaScript for strict detection
 INDEX_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -23,12 +24,12 @@ INDEX_HTML = """<!DOCTYPE html>
     <style>
         body { margin: 0; padding: 0; background: #111; font-family: system-ui, -apple-system, sans-serif; color: white; }
         
-        /* Compact mobile frame sizing */
+        /* Fixed: Portrait aspect ratio for 8.5x11 sheets */
         .viewfinder { 
             position: relative; 
             width: 100%; 
-            max-width: 380px; 
-            height: 320px; 
+            max-width: 340px; 
+            height: 440px; 
             margin: 0 auto; 
             overflow: hidden; 
             border-radius: 14px; 
@@ -55,11 +56,10 @@ INDEX_HTML = """<!DOCTYPE html>
         }
         #startBtn:active { transform: scale(0.96); }
 
-        /* Corner Target Overlay Boxes with enlarged touch-friendly capture zones */
         .target { 
             position: absolute; 
-            width: 52px; 
-            height: 52px; 
+            width: 48px; 
+            height: 48px; 
             border: 3px dashed #FFD700; 
             border-radius: 8px; 
             box-sizing: border-box; 
@@ -73,14 +73,15 @@ INDEX_HTML = """<!DOCTYPE html>
             box-shadow: 0 0 14px #00FF66; 
         }
         
-        #tl { top: 12px; left: 12px; }
-        #tr { top: 12px; right: 12px; }
-        #bl { bottom: 55px; left: 12px; }
-        #br { bottom: 55px; right: 12px; }
+        /* Adjusted positioning for the new taller portrait box */
+        #tl { top: 20px; left: 20px; }
+        #tr { top: 20px; right: 20px; }
+        #bl { bottom: 65px; left: 20px; }
+        #br { bottom: 65px; right: 20px; }
 
         .status-bar { 
             position: absolute; 
-            bottom: 8px; 
+            bottom: 12px; 
             left: 50%; 
             transform: translateX(-50%); 
             width: 90%; 
@@ -89,7 +90,7 @@ INDEX_HTML = """<!DOCTYPE html>
             color: #FFF; 
             text-align: center; 
             border-radius: 12px; 
-            font-size: 12px; 
+            font-size: 13px; 
             font-weight: 600; 
             z-index: 20; 
             border: 1px solid rgba(255,255,255,0.2); 
@@ -103,13 +104,12 @@ INDEX_HTML = """<!DOCTYPE html>
         <button id="startBtn" onclick="startCamera()">📷 Tap to Start Rear Camera</button>
         <video id="webcam" autoplay playsinline muted></video>
         
-        <!-- Target Guides -->
         <div id="tl" class="target"></div>
         <div id="tr" class="target"></div>
         <div id="bl" class="target"></div>
         <div id="br" class="target"></div>
 
-        <div id="status" class="status-bar">🎯 Align 4 corner squares in yellow boxes</div>
+        <div id="status" class="status-bar">🎯 Align corners with yellow boxes</div>
         <canvas id="procCanvas" style="display:none;"></canvas>
     </div>
 
@@ -119,7 +119,8 @@ INDEX_HTML = """<!DOCTYPE html>
         }
         
         sendToStreamlit("streamlit:componentReady", { apiVersion: 1 });
-        sendToStreamlit("streamlit:setFrameHeight", { height: 340 });
+        // Fixed: Adjusted height to accommodate the taller portrait viewfinder
+        sendToStreamlit("streamlit:setFrameHeight", { height: 460 });
 
         const video = document.getElementById('webcam');
         const canvas = document.getElementById('procCanvas');
@@ -136,7 +137,8 @@ INDEX_HTML = """<!DOCTYPE html>
 
         let isCaptured = false;
         let alignmentFrames = 0;
-        const REQUIRED_STEADY_FRAMES = 5; // Responsive capture (~0.15s hold)
+        // Fixed: Increased required frames from 5 to 12 so the user must hold steady to capture
+        const REQUIRED_STEADY_FRAMES = 12; 
 
         async function startCamera() {
             startBtn.style.display = "none";
@@ -180,7 +182,6 @@ INDEX_HTML = """<!DOCTYPE html>
                 const ctx = canvas.getContext('2d', { willReadFrequently: true });
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                // Map screen box coordinates directly to canvas pixel space
                 const videoRect = video.getBoundingClientRect();
                 const scaleX = canvas.width / videoRect.width;
                 const scaleY = canvas.height / videoRect.height;
@@ -191,7 +192,6 @@ INDEX_HTML = """<!DOCTYPE html>
                     const tEl = targets[key];
                     const tRect = tEl.getBoundingClientRect();
 
-                    // Convert visual target box rectangle into pixel space on canvas
                     const roiX = Math.max(0, (tRect.left - videoRect.left) * scaleX);
                     const roiY = Math.max(0, (tRect.top - videoRect.top) * scaleY);
                     const roiW = Math.min(canvas.width - roiX, tRect.width * scaleX);
@@ -210,7 +210,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
                 if (alignedCount === 4) {
                     alignmentFrames++;
-                    statusEl.innerText = `✨ Aligned! Holding steady...`;
+                    statusEl.innerText = `✨ Hold steady! (${alignmentFrames}/${REQUIRED_STEADY_FRAMES})`;
                     statusEl.classList.add('aligned');
 
                     if (alignmentFrames >= REQUIRED_STEADY_FRAMES) {
@@ -220,17 +220,18 @@ INDEX_HTML = """<!DOCTYPE html>
                     }
                 } else {
                     alignmentFrames = 0;
-                    statusEl.innerText = `🎯 Align 4 corner squares (${alignedCount}/4)`;
+                    statusEl.innerText = `🎯 Align corners with yellow boxes (${alignedCount}/4)`;
                     statusEl.classList.remove('aligned');
                 }
             }
             requestAnimationFrame(scanLoop);
         }
 
-        // Forgiving detection logic for LaTeX black corner boxes
+        // Fixed: Strict "Ink AND Paper" detection logic
         function hasDarkSquareMarker(imgData) {
             const data = imgData.data;
             let darkPixels = 0;
+            let lightPixels = 0;
             let sampledCount = 0;
 
             for (let i = 0; i < data.length; i += 16) {
@@ -240,12 +241,20 @@ INDEX_HTML = """<!DOCTYPE html>
                 const brightness = (r + g + b) / 3;
                 sampledCount++;
 
-                if (brightness < 120) { // Tolerant threshold for ambient light/shadows
+                if (brightness < 90) { // Strict threshold for black ink/box
                     darkPixels++;
+                } else if (brightness > 150) { // Strict threshold for white paper
+                    lightPixels++;
                 }
             }
-            const ratio = darkPixels / sampledCount;
-            return ratio > 0.04 && ratio < 0.85; // Flexible coverage allowance
+            
+            const darkRatio = darkPixels / sampledCount;
+            const lightRatio = lightPixels / sampledCount;
+            
+            // For a valid corner, the target area MUST contain a mix of dark ink (10% to 60%) 
+            // AND the surrounding white paper background (>25%). 
+            // This prevents solid dark backgrounds (like a desk or shadow) from false-triggering.
+            return (darkRatio > 0.10 && darkRatio < 0.60 && lightRatio > 0.25);
         }
 
         function executeAutoCapture(ctx) {
@@ -319,7 +328,7 @@ if image_bytes:
     with st.spinner("⚡ Reading sheet & grading..."):
         try:
             response = client.models.generate_content(
-                model="gemini-3.8-flash",
+                model="gemini-2.5-flash",
                 contents=[image_part, MASTER_PROMPT],
                 config=types.GenerateContentConfig(response_mime_type="application/json")
             )
